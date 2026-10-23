@@ -180,6 +180,7 @@ func approve(run *Run) {
 
 		if dup {
 			run.Log = append(run.Log, fmt.Sprintf("%s [Execution] Duplicate skipped for %s -> %s", now(), a.Key, id))
+			run.EventIDs = append(run.EventIDs, id)
 			continue
 		}
 

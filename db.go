@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -42,6 +43,8 @@ func initDB(dsn string) error {
 	if err := runMigrations(); err != nil {
 		return fmt.Errorf("failed running database migrations: %w", err)
 	}
+
+	initSeq()
 
 	return nil
 }
@@ -323,10 +326,34 @@ func dbSaveRun(run *Run) error {
 	return nil
 }
 
+func initSeq() {
+	var maxCal, maxReq int64
+	_ = db.QueryRow("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id, '-', -1) AS UNSIGNED)), 0) FROM calendar_events").Scan(&maxCal)
+	_ = db.QueryRow("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id, '-', -1) AS UNSIGNED)), 0) FROM approval_requests").Scan(&maxReq)
+	m := maxCal
+	if maxReq > m {
+		m = maxReq
+	}
+	m += 100
+	atomic.StoreInt64(&seq, m)
+	log.Printf("Initialized sequence counter seq=%d", m)
+}
+
 func dbSaveCalendarEvent(evt Event, idempotencyKey string) (bool, error) {
 	res, err := db.Exec(`
-		INSERT IGNORE INTO calendar_events (id, idempotency_key, run_id, task_id, title, details, start_time, is_tentative, reminder_minutes, owner)
+		INSERT INTO calendar_events (id, idempotency_key, run_id, task_id, title, details, start_time, is_tentative, reminder_minutes, owner)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+		id = VALUES(id),
+		idempotency_key = VALUES(idempotency_key),
+		run_id = VALUES(run_id),
+		task_id = VALUES(task_id),
+		title = VALUES(title),
+		details = VALUES(details),
+		start_time = VALUES(start_time),
+		is_tentative = VALUES(is_tentative),
+		reminder_minutes = VALUES(reminder_minutes),
+		owner = VALUES(owner)
 	`, evt.ID, idempotencyKey, evt.Key, evt.TaskID, evt.Title, evt.Details, evt.Start, evt.Tentative, evt.Reminder, evt.Owner)
 	if err != nil {
 		return false, err
