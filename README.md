@@ -29,12 +29,24 @@ Siblings coordinating an elderly parent’s health face recurring challenges:
 
 ## 2. Technology Stack
 
-* **Frontend:** React 19 + Vite + Tailwind CSS (Glassmorphism, dark palette, responsive design)
+* **Frontend:** React 19 + Vite + Tailwind CSS (Clean, subtle, light healthcare aesthetic, responsive design)
 * **Backend:** Go + HTTP router + MySQL connection pool
 * **Database:** MySQL 8.0 with 7 normalized tables and strict state domain separation
 * **Browser Automation:** Browserbase Developer Pack integration
 * **AI Layer:** Google Gemini 2.0 Flash + resilient local NLP entity extraction fallback
 * **Packaging & Orchestration:** Docker & Docker Compose
+* **Live Deployment:** Cloudflare Tunnel (`cloudflared`) with zero configuration SSL
+
+---
+
+## 3. Live Public Deployment
+
+* **Live Demo URL:** [https://holidays-dts-karen-treatments.trycloudflare.com](https://holidays-dts-karen-treatments.trycloudflare.com)
+* **API Health Check:** [https://holidays-dts-karen-treatments.trycloudflare.com/health](https://holidays-dts-karen-treatments.trycloudflare.com/health)
+* **Run Remote Test Suite:**
+  ```bash
+  ./test.sh https://holidays-dts-karen-treatments.trycloudflare.com
+  ```
 
 ---
 
