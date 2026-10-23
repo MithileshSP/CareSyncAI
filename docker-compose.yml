@@ -1,0 +1,47 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: caresync-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: caresync_root_pw
+      MYSQL_DATABASE: caresync
+      MYSQL_USER: caresync_user
+      MYSQL_PASSWORD: caresync_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - caresync_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "caresync_user", "-pcaresync_password"]
+      interval: 4s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  caresync:
+    build: .
+    container_name: caresync-app
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - MYSQL_DSN=caresync_user:caresync_password@tcp(mysql:3306)/caresync?parseTime=true
+      - PORT=8080
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: caresync-tunnel
+    command: tunnel --no-autoupdate --url http://caresync:8080
+    depends_on:
+      - caresync
+    restart: unless-stopped
+
+volumes:
+  caresync_mysql_data:
