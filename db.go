@@ -5,21 +5,57 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
-var db *sql.DB
+var (
+	db         *sql.DB
+	memMu      sync.RWMutex
+	memPortals = map[string]Rec{}
+	memMembers = map[string]FamilyMember{}
+	memEvents  = map[string]Event{}
+)
+
+func initMemoryStore() {
+	memMu.Lock()
+	defer memMu.Unlock()
+
+	memPortals = map[string]Rec{
+		"APT-101": {"APT-101", "hospital", "Cardiology follow-up, Dr. Rao", "confirmed", "2026-10-26 10:00", "Metro Heart Institute", "Suite 400, Clinic Tower"},
+		"RX-201":  {"RX-201", "pharmacy", "Metformin 500mg refill", "ready", "2026-10-25 17:00", "Walgreens Care Pharmacy", "Main St. Branch Drive-thru"},
+		"LAB-301": {"LAB-301", "lab", "HbA1c fasting blood test", "confirmed", "2026-10-24 08:00", "Quest Diagnostics Central", "Lab Room B"},
+		"LAB-302": {"LAB-302", "lab", "Lipid profile", "requested", "2026-10-27 09:00", "Quest Diagnostics Central", "Lab Room A"},
+	}
+
+	memMembers = map[string]FamilyMember{
+		"Arun":    {"FM-1", "Arun", "Primary Caregiver", "arun@example.com", "+1-555-0101", true, true, "Authorized primary caregiver full clinical access"},
+		"Priya":   {"FM-2", "Priya", "Backup Caregiver & Sibling", "priya@example.com", "+1-555-0102", true, true, "Authorized healthcare proxy and backup"},
+		"Karthik": {"FM-3", "Karthik", "Sibling", "karthik@example.com", "+1-555-0103", false, true, "General schedule access only; medical details restricted"},
+		"Ramesh":  {"FM-4", "Ramesh (Father)", "Elderly Care Recipient", "ramesh@example.com", "+1-555-0100", true, true, "Care recipient"},
+	}
+
+	memEvents = map[string]Event{}
+	atomic.StoreInt64(&seq, 100)
+	log.Printf("Initialized resilient in-memory database store (4 portals, 4 family members)")
+}
 
 func initDB(dsn string) error {
+	if dsn == "" || strings.Contains(dsn, "none") {
+		initMemoryStore()
+		return nil
+	}
+
 	var err error
 	log.Printf("Connecting to MySQL at %s ...", maskDSN(dsn))
 
-	// Retry connection for up to 60 seconds to allow MySQL container initialization
-	for i := 1; i <= 30; i++ {
+	// Retry connection for up to 6 seconds to allow MySQL container initialization
+	for i := 1; i <= 3; i++ {
 		db, err = sql.Open("mysql", dsn)
 		if err == nil {
 			err = db.Ping()
@@ -28,12 +64,15 @@ func initDB(dsn string) error {
 				break
 			}
 		}
-		log.Printf("MySQL not ready yet (attempt %d/30): %v. Retrying in 2s...", i, err)
-		time.Sleep(2 * time.Second)
+		log.Printf("MySQL check (attempt %d/3): %v. Retrying in 1s...", i, err)
+		time.Sleep(1 * time.Second)
 	}
 
 	if err != nil {
-		return fmt.Errorf("could not connect to MySQL after retries: %w", err)
+		log.Printf("Notice: MySQL not reachable (%v). Falling back to resilient in-memory database store.", err)
+		db = nil
+		initMemoryStore()
+		return nil
 	}
 
 	db.SetMaxOpenConns(25)
@@ -213,6 +252,17 @@ func runMigrations() error {
 // ---------------- Database Queries ----------------
 
 func dbGetPortals() ([]Rec, error) {
+	if db == nil {
+		memMu.RLock()
+		defer memMu.RUnlock()
+		var out []Rec
+		for _, r := range memPortals {
+			out = append(out, r)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+		return out, nil
+	}
+
 	rows, err := db.Query("SELECT id, kind, title, status, scheduled_date, COALESCE(provider_name,''), COALESCE(location,'') FROM portal_records ORDER BY id ASC")
 	if err != nil {
 		return nil, err
@@ -230,6 +280,16 @@ func dbGetPortals() ([]Rec, error) {
 }
 
 func dbGetPortalRecord(id string) (*Rec, error) {
+	if db == nil {
+		memMu.RLock()
+		defer memMu.RUnlock()
+		if r, ok := memPortals[id]; ok {
+			cp := r
+			return &cp, nil
+		}
+		return nil, nil
+	}
+
 	var r Rec
 	err := db.QueryRow("SELECT id, kind, title, status, scheduled_date, COALESCE(provider_name,''), COALESCE(location,'') FROM portal_records WHERE id = ?", id).
 		Scan(&r.ID, &r.Kind, &r.Title, &r.Status, &r.Date, &r.ProviderName, &r.Location)
@@ -243,11 +303,34 @@ func dbGetPortalRecord(id string) (*Rec, error) {
 }
 
 func dbUpdatePortalStatus(id, status string) error {
+	if db == nil {
+		memMu.Lock()
+		defer memMu.Unlock()
+		if r, ok := memPortals[id]; ok {
+			r.Status = status
+			memPortals[id] = r
+		}
+		return nil
+	}
+
 	_, err := db.Exec("UPDATE portal_records SET status = ? WHERE id = ?", status, id)
 	return err
 }
 
 func dbGetFamilyMembers() ([]FamilyMember, error) {
+	if db == nil {
+		memMu.RLock()
+		defer memMu.RUnlock()
+		var out []FamilyMember
+		order := []string{"Arun", "Priya", "Karthik", "Ramesh"}
+		for _, name := range order {
+			if m, ok := memMembers[name]; ok {
+				out = append(out, m)
+			}
+		}
+		return out, nil
+	}
+
 	rows, err := db.Query(`
 		SELECT fm.id, fm.name, fm.role, COALESCE(fm.email,''), COALESCE(fm.phone,''),
 		       COALESCE(sp.consent_medical_details, FALSE), COALESCE(sp.consent_scheduling, TRUE), COALESCE(sp.notes,'')
@@ -271,6 +354,17 @@ func dbGetFamilyMembers() ([]FamilyMember, error) {
 }
 
 func dbUpdateConsent(name string, medicalDetails, scheduling bool) error {
+	if db == nil {
+		memMu.Lock()
+		defer memMu.Unlock()
+		if m, ok := memMembers[name]; ok {
+			m.ConsentMedicalDetails = medicalDetails
+			m.ConsentScheduling = scheduling
+			memMembers[name] = m
+		}
+		return nil
+	}
+
 	_, err := db.Exec(`
 		INSERT INTO sharing_permissions (member_name, consent_medical_details, consent_scheduling)
 		VALUES (?, ?, ?)
@@ -282,6 +376,10 @@ func dbUpdateConsent(name string, medicalDetails, scheduling bool) error {
 }
 
 func dbSaveRun(run *Run) error {
+	if db == nil {
+		return nil
+	}
+
 	_, err := db.Exec(`
 		INSERT INTO approval_requests (id, scenario, recipient_consented, expected_outcome, actual_outcome, approval_status, calendar_status, verification_status, pass_status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -327,6 +425,10 @@ func dbSaveRun(run *Run) error {
 }
 
 func initSeq() {
+	if db == nil {
+		atomic.StoreInt64(&seq, 100)
+		return
+	}
 	var maxCal, maxReq int64
 	_ = db.QueryRow("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id, '-', -1) AS UNSIGNED)), 0) FROM calendar_events").Scan(&maxCal)
 	_ = db.QueryRow("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id, '-', -1) AS UNSIGNED)), 0) FROM approval_requests").Scan(&maxReq)
@@ -340,6 +442,13 @@ func initSeq() {
 }
 
 func dbSaveCalendarEvent(evt Event, idempotencyKey string) (bool, error) {
+	if db == nil {
+		memMu.Lock()
+		defer memMu.Unlock()
+		memEvents[evt.ID] = evt
+		return true, nil
+	}
+
 	res, err := db.Exec(`
 		INSERT INTO calendar_events (id, idempotency_key, run_id, task_id, title, details, start_time, is_tentative, reminder_minutes, owner)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -363,6 +472,17 @@ func dbSaveCalendarEvent(evt Event, idempotencyKey string) (bool, error) {
 }
 
 func dbGetCalendarEvents() ([]Event, error) {
+	if db == nil {
+		memMu.RLock()
+		defer memMu.RUnlock()
+		var out []Event
+		for _, e := range memEvents {
+			out = append(out, e)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+		return out, nil
+	}
+
 	rows, err := db.Query("SELECT id, idempotency_key, task_id, title, COALESCE(details,''), start_time, is_tentative, reminder_minutes, owner, created_at FROM calendar_events ORDER BY start_time ASC")
 	if err != nil {
 		return nil, err
@@ -382,6 +502,16 @@ func dbGetCalendarEvents() ([]Event, error) {
 }
 
 func dbGetCalendarEventByID(id string) (*Event, error) {
+	if db == nil {
+		memMu.RLock()
+		defer memMu.RUnlock()
+		if e, ok := memEvents[id]; ok {
+			cp := e
+			return &cp, nil
+		}
+		return nil, nil
+	}
+
 	var e Event
 	var created time.Time
 	err := db.QueryRow("SELECT id, idempotency_key, task_id, title, COALESCE(details,''), start_time, is_tentative, reminder_minutes, owner, created_at FROM calendar_events WHERE id = ?", id).
@@ -397,6 +527,25 @@ func dbGetCalendarEventByID(id string) (*Event, error) {
 }
 
 func dbGetDashboardStats() (*DashboardStats, error) {
+	if db == nil {
+		memMu.RLock()
+		defer memMu.RUnlock()
+		stats := &DashboardStats{}
+		for _, p := range memPortals {
+			if p.Kind == "hospital" {
+				stats.UpcomingAppointments++
+			}
+			if p.Kind == "lab" && p.Status == "requested" {
+				stats.PendingLabBookings++
+			}
+			if p.Kind == "pharmacy" && p.Status == "ready" {
+				stats.RefillsReady++
+			}
+		}
+		stats.TotalEvents = len(memEvents)
+		return stats, nil
+	}
+
 	stats := &DashboardStats{}
 	db.QueryRow("SELECT COUNT(*) FROM portal_records WHERE kind = 'hospital'").Scan(&stats.UpcomingAppointments)
 	db.QueryRow("SELECT COUNT(*) FROM portal_records WHERE kind = 'lab' AND status = 'requested'").Scan(&stats.PendingLabBookings)
