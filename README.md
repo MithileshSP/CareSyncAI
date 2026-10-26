@@ -41,11 +41,11 @@ Siblings coordinating an elderly parent’s health face recurring challenges:
 
 ## 3. Live Public Deployment
 
-* **Live Demo URL:** [https://holidays-dts-karen-treatments.trycloudflare.com](https://holidays-dts-karen-treatments.trycloudflare.com)
-* **API Health Check:** [https://holidays-dts-karen-treatments.trycloudflare.com/health](https://holidays-dts-karen-treatments.trycloudflare.com/health)
+* **Live Demo URL:** [https://prototype-announced-interval-scenes.trycloudflare.com](https://prototype-announced-interval-scenes.trycloudflare.com)
+* **API Health Check:** [https://prototype-announced-interval-scenes.trycloudflare.com/health](https://prototype-announced-interval-scenes.trycloudflare.com/health)
 * **Run Remote Test Suite:**
   ```bash
-  ./test.sh https://holidays-dts-karen-treatments.trycloudflare.com
+  ./test.sh https://prototype-announced-interval-scenes.trycloudflare.com
   ```
 
 ---
